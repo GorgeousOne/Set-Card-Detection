@@ -1,92 +1,164 @@
 import numpy as np
 import cv2 as cv
-import math
+from copy import deepcopy
 
 
 def dist_squared(point1, point2):
-    return (point2[1] - point1[1]) ** 2 + (point2[0] - point1[0]) ** 2
+	return (point2[1] - point1[1]) ** 2 + (point2[0] - point1[0]) ** 2
 
 
-def ratio_fits(width, height):
-    max_ratio = 3
-    min_ratio = 1
+def get_aspect_ratio(rect):
+	return rect[1][1] / rect[1][0]
 
-    r = max(width, height) / min(width, height)
-    return min_ratio < r < max_ratio
+
+def get_greater_aspect_ratio(rect):
+	width = rect[1][0]
+	height = rect[1][1]
+	return (width / height) if width > height else (height / width)
+
+
+def ratio_fits(rect):
+	min_ratio = 1.5
+	max_ratio = 3.2
+
+	ratio = get_greater_aspect_ratio(rect)
+	return min_ratio < ratio < max_ratio
+
+
+def get_contour_adjusted(rect, contour):
+	center = rect[0]
+	contour_norm = contour - center
+
+	angle = -rect[2] + (90 if get_aspect_ratio(rect) > 1 else 0)
+	angle_rad = np.radians(angle)
+
+	matrix = np.array([[np.cos(angle_rad), -np.sin(angle_rad)],
+					   [np.sin(angle_rad), np.cos(angle_rad)]])
+
+	contour_rot = np.empty((0, 1, 2), float)
+
+	for point in contour_norm:
+		contour_rot = np.append(contour_rot, [[matrix.dot(point[0])]], axis=0)
+
+	rect2 = (deepcopy(rect[0]), deepcopy(rect[1]), rect[2] + angle)
+	return np.int0(contour_rot + center), rect2
 
 
 def update(val):
-    global img
-    global imgGray
-    global canvas
+	global img
+	global imgGray
+	global canvas
 
-    global minSignSize
-    global maxSignSize
+	min_contour_points = imgMinExtent * 0.05
 
-    thresh1 = cv.getTrackbarPos("thresh1", "pars")
-    if thresh1 % 2 == 0:
-        thresh1 += 1
+	min_bounds_size = imgMinExtent * 0.03
+	min_exact_bound_size = imgMinExtent * 0.03
+	max_exact_bound_size = imgMinExtent * 0.19
 
-    thresh = cv.adaptiveThreshold(imgGray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, thresh1, 2)
+	min_bounds_occupation = 0.5
+	max_bounds_occupation = 0.90
 
-    contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    canvas = img.copy()
+	max_diamond_occupation = 0.65
+	max_wave_occupation = 0.81
 
-    for contour in contours:
+	thresh1 = cv.getTrackbarPos("thresh1", "pars")
 
-        if len(contour) < 40:
-            cv.drawContours(canvas, [contour], -1, (0, 0, 0), 1)
-            continue
+	if thresh1 % 2 == 0:
+		thresh1 += 1
 
-        x, y, w, h = cv.boundingRect(contour)
+	thresh = cv.adaptiveThreshold(imgGray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, thresh1, 2)
 
-        if w < minSignSize or h < minSignSize:
-            cv.drawContours(canvas, [contour], -1, (255, 0, 0), 1)
-            continue
+	contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+	matched_shapes = []
 
-        rect = cv.minAreaRect(contour)
+	canvas = img.copy()
 
-        box = cv.boxPoints(rect)
-        box = np.int0(box)
+	for contour in contours:
 
-        max_size_squared = maxSignSize ** 2
-        width_squared = dist_squared(box[0], box[1])
-        height_squared = dist_squared(box[1], box[2])
+		# ignore short contours
+		if len(contour) < min_contour_points:
+			# cv.drawContours(canvas, [contour], -1, (128, 128, 128), 1)
+			continue
 
-        if width_squared > max_size_squared and height_squared > max_size_squared:
-            cv.drawContours(canvas, [contour], -1, (0, 0, 255), 1)
-            continue
+		x, y, w, h = cv.boundingRect(contour)
 
-        width = math.sqrt(width_squared)
-        height = math.sqrt(height_squared)
+		# ignore small dots
+		if w < min_bounds_size and h < min_bounds_size:
+			cv.drawContours(canvas, [contour], -1, (255, 0, 0), 1)
+			continue
 
-        if not ratio_fits(width, height):
-            cv.drawContours(canvas, [contour], -1, (0, 0, 0), 2)
-            continue
+		rect = cv.minAreaRect(contour)
+		box = cv.boxPoints(rect)
+		box = np.int0(box)
 
-        area = cv.contourArea(contour)
-        min_bounding_take_up = 0.5
+		width = rect[1][0]
+		height = rect[1][1]
 
-        if area / (width * height) < min_bounding_take_up:
-            cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
-            continue
+		# ignore quiet thing things
+		if width < min_exact_bound_size or height < min_exact_bound_size:
+			cv.drawContours(canvas, [contour], -1, (255, 128, 128), 1)
+			continue
 
-        epsilon = 0.01 * cv.arcLength(contour, True)
-        approx = cv.approxPolyDP(contour, epsilon, True)
+		if width > max_exact_bound_size and height > max_exact_bound_size:
+			cv.drawContours(canvas, [contour], -1, (0, 0, 255), 1)
+			continue
 
-        cv.drawContours(canvas, [box], 0, (255, 0, 255), 2)
-        cv.drawContours(canvas, [approx], -1, (0, 255, 0), 2)
+		if not ratio_fits(rect):
+			cv.drawContours(canvas, [contour], -1, (0, 0, 0), 1)
+			continue
 
+		area = cv.contourArea(contour)
+		bounds_occupation = area / (width * height)
+
+		if bounds_occupation < min_bounds_occupation:
+			cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
+			continue
+
+		if bounds_occupation > max_bounds_occupation:
+			cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
+			continue
+
+		color = (255, 0, 0) if bounds_occupation < max_diamond_occupation \
+			else (0, 255, 0) if bounds_occupation < max_wave_occupation \
+			else (0, 0, 255)
+
+		cv.drawContours(canvas, [contour], -1, color, 2)
+		cv.drawContours(canvas, [box], 0, (255, 0, 255), 1)
+
+		matched_shapes.append(contour)
+		continue
+
+	# new_contour, new_rect = get_contour_adjusted(rect, contour)
+	# new_box = cv.boxPoints(new_rect)
+	# new_box = np.int0(new_box)
+
+	# point = matched_shapes[0][0][0]
+	# point = tuple(map(tuple, point))
+	# print(point)
+	#
+	# for shape in matched_shapes:
+	# 	contained = cv.pointPolygonTest(shape, point, False)
+	# 	cv.drawContours(canvas, [shape], -1, (0, 0, 255 if contained else 0), 2)
+	#
+	# cv.drawContours(canvas, [matched_shapes[0]], -1, (255, 0, 255), 2)
+
+
+# cv.drawContours(canvas, [new_contour], -1, (0, 255, 0), 1)
+# cv.drawContours(canvas, [new_box], 0, (255, 0, 255), 1)
 
 cv.namedWindow("pars")
 cv.resizeWindow("pars", 640, 240)
-cv.createTrackbar("thresh1", "pars", 11, 30, update)
+cv.createTrackbar("thresh1", "pars", 9, 30, update)
 cv.createTrackbar("thresh2", "pars", 20, 100, update)
 
 kernelSize = 5
 sigma = 3
 
-img = cv.imread('./res/test05.png')
+img = cv.imread('./res/test04.JPG')
+
+if img is None:
+	raise Exception("image not found")
+
 imgBlur = cv.GaussianBlur(img, (kernelSize, kernelSize), cv.BORDER_DEFAULT)
 imgGray = cv.cvtColor(imgBlur, cv.COLOR_BGR2GRAY)
 
@@ -94,15 +166,11 @@ imgWidth = img.shape[0]
 imgHeight = img.shape[1]
 imgMinExtent = min(imgWidth, imgHeight)
 
-minSignSize = imgMinExtent * 0.03
-maxSignSize = imgMinExtent * 0.20
-print(minSignSize, maxSignSize)
-
 canvas = img.copy()
 update(None)
 
 cv.imshow('image', canvas)
 
 while cv.getWindowProperty('image', 0) >= 0:
-    cv.imshow('image', canvas)
-    cv.waitKey(500)
+	cv.imshow('image', canvas)
+	cv.waitKey(200)
