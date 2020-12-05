@@ -3,74 +3,56 @@ import cv2 as cv
 import colorsys
 
 
-def get_aspect_ratio(rect):
-	return rect[1][1] / rect[1][0]
-
-
-def get_greater_aspect_ratio(rect):
-	width = rect[1][0]
-	height = rect[1][1]
-	return (width / height) if width > height else (height / width)
-
-
-def ratio_fits(rect):
-	min_ratio = 1.3
-	max_ratio = 3.2
-
-	ratio = get_greater_aspect_ratio(rect)
-	return min_ratio < ratio < max_ratio
-
-
 class SetShape:
 
-	def __init__(self, contour, bbox, exact_rect, shape, color=None, filling=None, child_contour=None,
+	def __init__(self, contour, bbox, exact_rect, shape, color=None, shading=None, child_contour=None,
 				 parent_contour=None):
 		self.contour = contour
 		self.bbox = bbox
 		self.exact_rect = exact_rect
 		self.shape = shape
 		self.color = color
-		self.filling = filling
+		self.shading = shading
 		self.child_contour = child_contour
 		self.parent_contour = parent_contour
 		self.max_extent = max(exact_rect[1][0], exact_rect[1][0])
 
 
-def update(val):
-	global imgGray
+def get_blurred_gray(img):
+	kernel_size = 5
 
-	min_contour_points = imgMinExtent * 0.04
-	min_bounds_size = imgMinExtent * 0.03
-	min_exact_bound_size = imgMinExtent * 0.025
-	max_exact_bound_size = imgMinExtent * 0.19
+	img_blur = cv.GaussianBlur(img, (kernel_size, kernel_size), cv.BORDER_DEFAULT)
+	return cv.cvtColor(img_blur, cv.COLOR_BGR2GRAY)
 
+
+def find_contours(img_gray):
+	thresh = cv.adaptiveThreshold(img_gray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 7, 2)
+	contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+	return contours
+
+
+def find_possible_shapes(contours, img_min_extent):
+	min_contour_points = img_min_extent * 0.04
+	min_bounds_size = img_min_extent * 0.03
+	min_exact_bound_size = img_min_extent * 0.025
+	max_exact_bound_size = img_min_extent * 0.19
 	min_bounds_occupation = 0.55
 	max_bounds_occupation = 0.90
 
-	max_diamond_occupation = 0.65
-	max_squiggle_occupation = 0.81
-
-	thresh1 = 9  # cv.getTrackbarPos("thresh1", "pars")
-
-	if thresh1 % 2 == 0:
-		thresh1 += 1
-
-	thresh = cv.adaptiveThreshold(imgGray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, thresh1, 2)
-	contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
 	matched_shapes = []
 
 	for contour in contours:
 
 		# ignore short contours
 		if len(contour) < min_contour_points:
-			# cv.drawContours(canvas, [contour], -1, (128, 128, 128), 1)
+			# cv.drawContours(canvas, [contour], -1, (0, 0, 0), 1)
 			continue
 
 		x, y, w, h = cv.boundingRect(contour)
 
 		# ignore small dots
 		if w < min_bounds_size and h < min_bounds_size:
-			cv.drawContours(canvas, [contour], -1, (255, 0, 0), 1)
+			# cv.drawContours(canvas, [contour], -1, (255, 0, 0), 1)
 			continue
 
 		rect = cv.minAreaRect(contour)
@@ -78,13 +60,13 @@ def update(val):
 		width = rect[1][0]
 		height = rect[1][1]
 
-		# ignore quiet thing things
+		# ignore quiet thin things
 		if width < min_exact_bound_size or height < min_exact_bound_size:
-			cv.drawContours(canvas, [contour], -1, (255, 128, 128), 1)
+			# cv.drawContours(canvas, [contour], -1, (255, 128, 128), 1)
 			continue
 
 		if width > max_exact_bound_size and height > max_exact_bound_size:
-			cv.drawContours(canvas, [contour], -1, (0, 0, 255), 1)
+			# cv.drawContours(canvas, [contour], -1, (0, 0, 255), 1)
 			continue
 
 		if not ratio_fits(rect):
@@ -95,33 +77,53 @@ def update(val):
 		bounds_occupation = area / (width * height)
 
 		if bounds_occupation < min_bounds_occupation:
-			cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
+			# cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
 			continue
 
 		if bounds_occupation > max_bounds_occupation:
-			cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
+			# cv.drawContours(canvas, [contour], -1, (255, 255, 255), 1)
 			continue
 
-		shape = "diamond" if bounds_occupation < max_diamond_occupation else \
-			"squiggle" if bounds_occupation < max_squiggle_occupation else \
-				"oval"
-
-		set_shape = SetShape(contour, [x, y, w, h], rect, shape)
+		set_shape = SetShape(contour, [x, y, w, h], rect, find_shape_type(bounds_occupation))
 		matched_shapes.append(set_shape)
 
-	find_colors_shapes(matched_shapes)
+	return matched_shapes
 
 
-def get_shape_color(shape):
-	return {
-		"diamond": (255, 0, 0),
-		"squiggle": (0, 255, 0),
-		"oval": (0, 0, 255)
-	}[shape]
+# def get_aspect_ratio(rect):
+# 	return rect[1][1] / rect[1][0]
 
 
-def dist_squared(point0, point1):
-	return (point1[0] - point0[0]) ** 2 + (point1[1] - point0[1])
+def ratio_fits(rect):
+	min_ratio = 1.3
+	max_ratio = 3.2
+
+	ratio = get_greater_aspect_ratio(rect)
+	return min_ratio < ratio < max_ratio
+
+
+def get_greater_aspect_ratio(rect):
+	width = rect[1][0]
+	height = rect[1][1]
+	return (width / height) if width > height else (height / width)
+
+
+def find_shape_type(bounds_occupation):
+	return "diamond" if bounds_occupation < 0.65 else \
+		"squiggle" if bounds_occupation < 0.81 else \
+			"oval"
+
+
+# def get_shape_color(shape):
+# 	return {
+# 		"diamond": (255, 0, 0),
+# 		"squiggle": (0, 255, 0),
+# 		"oval": (0, 0, 255)
+# 	}[shape]
+
+
+# def dist_squared(point0, point1):
+# 	return (point1[0] - point0[0]) ** 2 + (point1[1] - point0[1])
 
 
 def get_contour_scaled(contour, contour_mid, scale):
@@ -131,34 +133,31 @@ def get_contour_scaled(contour, contour_mid, scale):
 
 
 def normalized(vec):
-	return vec / np.sqrt(vec[0] ** 2 + vec[1] ** 2)
+	return np.array(vec) / np.sqrt(vec[0] ** 2 + vec[1] ** 2)
 
 
 def grow_contour(contour, pixels):
-	shrunken_contour = np.zeros((0, 2))
-
+	new_contour = np.zeros((0, 2))
 	prev_point = contour[-2][0]
 	next_point = contour[0][0]
 	point = contour[-1][0]
 
 	for i in range(1, len(contour) - 1):
 
-		if not prev_point is next_point:
-			dist = next_point - prev_point
+		dist = next_point - prev_point
+
+		if np.any(dist):
 			facing = normalized([dist[1], -dist[0]])
-			shrunken_contour = np.append(shrunken_contour, [point + facing * pixels], 0)
+			new_contour = np.append(new_contour, [point + facing * pixels], 0)
 
 		prev_point = point
 		point = next_point
 		next_point = contour[i][0]
 
-	return np.int0(shrunken_contour)
+	return np.int0(new_contour)
 
 
-def find_colors_shapes(shapes):
-	global img
-	global canvas
-
+def find_actual_shapes(shapes):
 	unique_shapes = []
 
 	for shape in shapes:
@@ -189,43 +188,49 @@ def find_colors_shapes(shapes):
 		if shape.child_contour is None:
 			shape.child_contour = grow_contour(shape.contour, -shape.max_extent * 0.08)
 
-	# canvas = np.zeros(img.shape, np.uint8)
+	return unique_shapes
 
-	for shape in unique_shapes:
 
-		# mask = np.zeros(img.shape[:2], np.uint8)
-		# cv.drawContours(mask, [shape.child_contour], -1, 255, -1)
-		# mean = cv.mean(img, mask)
-		# cv.drawContours(canvas, [shape.child_contour], -1, mean, -1)
+def analyse_shapes_colors(shapes, img_colored):
+	global canvas
 
-		# hls_mean = gbr2hls(np.array(mean))
+	for shape in shapes:
 
-		mask = np.zeros(img.shape[:2], np.uint8)
+		mask = np.zeros(img_colored.shape[:2], np.uint8)
 		cv.drawContours(mask, [shape.contour], -1, 255, -1)
 		cv.drawContours(mask, [shape.child_contour], -1, 0, -1)
+		mean_contour = cv.mean(img_colored, mask)
 
-		mean = cv.mean(img, mask)
+		shape.color = find_shape_color(gbr2hls(mean_contour))
+		cv.drawContours(canvas, [shape.contour], -1, get_color_for_color_name(shape.color), 2)
 
-		color_name = find_shape_color(gbr2hls(np.array(mean)))
-		shape.color = color_name
+		mask = np.zeros(img_colored.shape[:2], np.uint8)
+		cv.drawContours(mask, [shape.child_contour], -1, 255, -1)
+		mean_inside = cv.mean(img_colored, mask)
+		# cv.drawContours(canvas, [shape.child_contour], -1, mean_contour, -1)
 
-		cv.drawContours(canvas, [shape.contour], -1, get_color_color(shape.color), 2)
+		mask = np.zeros(img_colored.shape[:2], np.uint8)
+		cv.drawContours(mask, [shape.parent_contour], -1, 255, -1)
+		cv.drawContours(mask, [shape.contour], -1, 0, -1)
+		mean_outside = cv.mean(img_colored, mask)
 
-		# mask = np.zeros(img.shape[:2], np.uint8)
-		# cv.drawContours(mask, [shape.parent_contour], -1, 255, -1)
-		# cv.drawContours(mask, [shape.contour], -1, 0, -1)
-		# mean = cv.mean(img, mask)
-		# cv.drawContours(canvas, [shape.parent_contour], -1, mean, 2)
-		# cv.drawContours(canvas, [shape.contour], -1, 255, 1)
+		shape.shading = find_shading(gbr2hls(mean_inside), gbr2hls(mean_outside))
 
-		hls_mean = gbr2hls(np.array(mean))
+		if shape.shading == "solid":
+			cv.drawContours(canvas, [shape.child_contour], -1, 0, 2)
+		elif shape.shading == "open":
+			cv.drawContours(canvas, [shape.child_contour], -1, (255, 255, 255), 2)
 
 
-# print(int(hls_mean[1] / 255 * 360))
+def gbr2hls(color):
+	# print("rgb", (int(color[2]), int(color[1]), int(color[0])))
+	color = np.array(color) / 255
+	h, l, s = colorsys.rgb_to_hls(color[2], color[1], color[0])
+	return np.array([h, l, s])
+
 
 def find_shape_color(hls_color):
 	hue = hls_color[0] * 360
-
 	if hue >= 350 or hue <= 20:
 		return "red"
 	elif 240 <= hue <= 330:
@@ -233,53 +238,76 @@ def find_shape_color(hls_color):
 	elif 30 <= hue <= 160:
 		return "green"
 	else:
+		print(int(hue))
 		return "other"
 
 
-def get_color_color(color_name):
+def find_shading(hsl_color_inside, hsl_color_outside):
+	light_inside = hsl_color_inside[1] * 100
+	light_outside = hsl_color_outside[1] * 100
+	fall_off = light_outside - light_inside
+
+	if fall_off < 4:
+		return "open"
+	elif fall_off < 15:
+		return "striped"
+	else:
+		return "solid"
+
+
+def get_color_for_color_name(color_name):
 	return {
-		"purple": (255, 0, 0),
+		"purple": (255, 1280, 128),
 		"green": (0, 255, 0),
 		"red": (0, 0, 255),
 		"other": 0
 	}[color_name]
 
 
-def gbr2hls(color):
-	# print("rgb", (int(color[2]), int(color[1]), int(color[0])))
-	color = color / 255
-	h, l, s = colorsys.rgb_to_hls(color[2], color[1], color[0])
-	# print("hsl", (int(h * 360), int(s * 100), int(l * 100)))
+def update(val):
+	global imgGray
+	global imgOrig
+	global canvas
 
-	# r, g, b = colorsys.hls_to_rgb(h, l, s)
-	return np.array([h, l, s])
+	canvas = imgOrig.copy()
+	img_min_extent = min(imgOrig.shape[0], imgOrig.shape[1])
+
+	contours = find_contours(imgGray)
+	possible_shapes = find_possible_shapes(contours, img_min_extent)
+
+	actual_shapes = find_actual_shapes(possible_shapes)
+	analyse_shapes_colors(actual_shapes, imgOrig)
 
 
-# cv.namedWindow("pars")
-# cv.resizeWindow("pars", 640, 240)
-# cv.createTrackbar("thresh1", "pars", 9, 30, update)
-# cv.createTrackbar("thresh2", "pars", 20, 100, update)
+def get_img_resized(img):
+	img_height = img.shape[0]
+	img_width = img.shape[1]
+	max_factor = max(img_width, img_height) // 1000  # or whatever
 
-kernelSize = 5
-sigma = 3
+	if max_factor > 1:
+		return cv.resize(img, (img_width // max_factor, img_height // max_factor))
+	else:
+		return img
 
-img = cv.imread('./res/test_img.JPG')
 
-if img is None:
+cv.namedWindow("pars")
+cv.resizeWindow("pars", 640, 240)
+cv.createTrackbar("thresh1", "pars", 7, 30, update)
+cv.createTrackbar("thresh2", "pars", 20, 100, update)
+
+imgOrig = cv.imread('./res/test21.JPG')
+
+if imgOrig is None:
 	raise Exception("image not found")
 
-imgBlur = cv.GaussianBlur(img, (kernelSize, kernelSize), cv.BORDER_DEFAULT)
-imgGray = cv.cvtColor(imgBlur, cv.COLOR_BGR2GRAY)
-
-imgWidth = img.shape[0]
-imgHeight = img.shape[1]
-imgMinExtent = min(imgWidth, imgHeight)
-
-canvas = img.copy()
+imgOrig = get_img_resized(imgOrig)
+imgGray = get_blurred_gray(imgOrig)
+canvas = imgOrig.copy()
 update(None)
 
-cv.imshow('image', canvas)
-
-while cv.getWindowProperty('image', 0) >= 0:
+while True:
 	cv.imshow('image', canvas)
-	cv.waitKey(200)
+	cv.waitKey(1000)
+
+	if cv.getWindowProperty('image', 0) < 0:
+		exit()
